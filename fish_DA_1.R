@@ -1,5 +1,5 @@
 #----0. Packages----
-# install.packages(c("vegan", "pastecs", "psych", "gplots", "cluster"))
+install.packages(c("vegan", "pastecs", "psych", "gplots", "cluster"))
 library(vegan) #vegdist(), decostand()
 library(pastecs) #stat.desc()
 library(psych) #describeBy
