@@ -1,1 +1,5 @@
 fish_data <- read.csv("clean_data/Catoctin_FishData.csv")
+habitat_data <- read.csv("clean_data/Catoctin_FishHabitat.csv")
+sites_data <- read.csv("clean_data/Catoctin_LoggerSites.csv")
+logger_data <- read.csv("clean_data/Catoctin_LoggerSites.csv")
+temp_data <- read.csv("clean_data/Catoctin_Temperature.csv")
