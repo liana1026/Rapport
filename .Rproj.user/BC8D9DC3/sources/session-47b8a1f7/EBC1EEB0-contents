@@ -10,10 +10,6 @@ View(wide_data)
 wide<-reshape(fish, idvar="ReachID", timevar="Species", direction="wide")
 
 View(wide)
-fish2<-fish[fish$Species, fish$ReachID, fish$Count,]
-
-
-fish2<-fish[,fish$Species, fish$ReachID, fish$Count]
 
 fish2<-fish[,c("Species", "ReachID", "Count")]
 View(fish2)
