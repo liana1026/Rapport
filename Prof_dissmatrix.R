@@ -1,4 +1,8 @@
+
 library(tidyr)
+
+# folder_path <- getwd()
+fish<- read.csv(("Catoctin_FishData.csv"))
 
 wide_data <- fish %>%
   pivot_wider(
