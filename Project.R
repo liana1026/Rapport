@@ -286,13 +286,15 @@ for (e in especes) {
 ##########################
 ############################################################
 # TRUITES : fusion des donnees + analyse proies / predateurs
+# Version PAR CLASSE DE TAILLE (petites / grandes truites) - V3
 # A lancer APRES avoir charge `fish` (fish <- read.csv(path_fishdata))
+# Les lignes changees dans cette version sont marquees "# V3"
 ############################################################
 
+# install.packages(c("dplyr", "readxl", "writexl", "lmerTest"))   # une seule fois, AVANT les library()
 library(dplyr)
 library(readxl)
 library(writexl)
-install.packages(c("readxl", "writexl", "lmerTest"))   # si besoin
 
 ############################################################
 # 1. FUSION : fish + tableau des tailles et des poids par espece
@@ -325,27 +327,101 @@ head(fish_complet)
 # 2. PARAMETRES DE L'ANALYSE
 ############################################################
 
-ratio <- 0.4                          # proie max = 40 % de la longueur du predateur (a justifier, tester 0.3 et 0.5)
+ratio <- 0.4                          # proie max = 40 % de la longueur du predateur (a justifier par la litterature)
 trout_codes <- c("SATR", "SAFO")
-Lmax_truite <- max(fish_complet$Length[fish_complet$Species %in% trout_codes], na.rm = TRUE)   # 318 mm
+L_truites <- fish_complet$Length[fish_complet$Species %in% trout_codes]          # V3 : toutes les longueurs de truites
 
-# Proies potentielles : especes (hors truites) que la plus grosse truite observee peut avaler
-proies_codes <- sp$Species[!sp$Species %in% trout_codes & sp$L_ref_cm * 10 <= ratio * Lmax_truite]
-proies_codes    # controle : ETFL RHAT COCA CLFU COGI RHCA
+# --- (3) Taille de la plus grande truite : quantile 95 % au lieu du max ---------- V3
+sort(L_truites, decreasing = TRUE)[1:10]                                          # V3 : controle : 318 est-il isole ?
+Lmax_truite <- as.numeric(quantile(L_truites, 0.95, na.rm = TRUE))                # V3 : robuste a un poisson exceptionnel
+Lmax_truite                                                                       # V3
+
+# --- (1) Limite entre petites et grandes truites ------------------------------------
+# Calcul automatique : creux de la distribution des longueurs entre le 1er pic (0+) et le 2e pic (1+)
+dens  <- density(L_truites, na.rm = TRUE)                                         # V3 : courbe lissee des longueurs
+pente <- diff(sign(diff(dens$y)))                                                 # V3 : changements de pente
+pics  <- which(pente == -2) + 1                                                   # V3 : sommets (maxima locaux)
+creux <- which(pente ==  2) + 1                                                   # V3 : creux (minima locaux)
+creux_1 <- creux[creux > pics[1]][1]                                              # V3 : 1er creux apres le 1er pic
+
+if (length(pics) >= 2 && !is.na(creux_1)) {                                       # V3
+  seuil_classe <- round(dens$x[creux_1])                                          # V3 : longueur (mm) du creux
+} else {                                                                          # V3
+  seuil_classe <- round(median(L_truites, na.rm = TRUE))                          # V3 : secours si un seul pic
+  cat("Un seul pic trouve : seuil_classe = mediane des longueurs\n")              # V3
+}                                                                                 # V3
+seuil_classe                                                                      # V3 : controle
+
+par(mfrow = c(1, 3))                                                              # V3 : graphiques de controle
+hist(L_truites, breaks = 40, freq = FALSE,                                        # V3 : toutes truites + courbe
+     main = "Toutes les truites", xlab = "Longueur (mm)")                         # V3
+lines(dens, lwd = 2)                                                              # V3
+abline(v = seuil_classe, col = "red", lwd = 2)                                    # V3
+for (e in trout_codes) {                                                          # V3
+  hist(fish_complet$Length[fish_complet$Species == e],                            # V3
+       breaks = 40, main = e, xlab = "Longueur (mm)")                             # V3
+  abline(v = seuil_classe, col = "red", lwd = 2)                                  # V3 : seuil actuel
+}                                                                                 # V3
+par(mfrow = c(1, 1))                                                              # V3
+
+# --- (4) Taille utilisee pour classer une espece comme proie ------------------------ V3
+# "ref" = taille de reference de l'Excel ; "obs" = mediane des longueurs mesurees dans tes donnees
+taille_proie <- "ref"                                                             # V3 : mettre "obs" pour tester
+
+L_obs <- fish_complet %>%                                                         # V3
+  filter(!Species %in% trout_codes) %>%                                           # V3
+  group_by(Species) %>%                                                           # V3
+  summarise(L_mediane_obs = median(Length, na.rm = TRUE),                         # V3
+            L_max_obs     = max(Length, na.rm = TRUE),                            # V3
+            n_obs         = n(), .groups = "drop")                                # V3
+
+comp_tailles <- sp %>%                                                            # V3
+  select(Species, L_ref_cm) %>%                                                   # V3
+  mutate(L_ref_mm = L_ref_cm * 10) %>%                                            # V3
+  left_join(L_obs, by = "Species")                                                # V3
+comp_tailles$L_proie_mm <- if (taille_proie == "obs") comp_tailles$L_mediane_obs else comp_tailles$L_ref_mm   # V3
+comp_tailles                                                                      # V3 : controle ref vs observe
+
+# Proies des GRANDES truites (>= seuil_classe) : especes que la plus grosse truite peut avaler
+proies_codes <- comp_tailles$Species[which(!comp_tailles$Species %in% trout_codes &
+                                             comp_tailles$L_proie_mm <= ratio * Lmax_truite)]   # V3
+proies_codes    # controle
+
+# Proies des PETITES truites (< seuil_classe) : especes qu'une truite de seuil_classe peut avaler
+proies_pet_codes <- comp_tailles$Species[which(!comp_tailles$Species %in% trout_codes &
+                                                 comp_tailles$L_proie_mm <= ratio * seuil_classe)]   # V3
+proies_pet_codes    # controle (peut etre vide : la CPUE vaudra alors 0 partout)
+
+# --- (2) Sensibilite au ratio : quelles especes entrent / sortent ? ----------------- V3
+for (r_test in c(0.3, 0.4, 0.5)) {                                                # V3
+  cat("\nratio =", r_test,                                                        # V3
+      "\n  proies grandes truites :", comp_tailles$Species[which(!comp_tailles$Species %in% trout_codes &
+                                                                   comp_tailles$L_proie_mm <= r_test * Lmax_truite)],   # V3
+      "\n  proies petites truites :", comp_tailles$Species[which(!comp_tailles$Species %in% trout_codes &
+                                                                   comp_tailles$L_proie_mm <= r_test * seuil_classe)], "\n")   # V3
+}                                                                                 # V3
 
 # Predateurs de truites (hors truites) : especes classees "Predator"
 pred_codes <- sp$Species[sp$Categorie == "Predator" & !sp$Species %in% trout_codes]
 pred_codes      # controle : MISA
 
-# Une truite est consideree "grande" si elle peut manger une truite de 100 mm (100 / 0.4 = 250 mm)
-seuil_grande_truite <- 100 / ratio
+# --- (5) Grande truite predatrice = peut manger une petite truite de taille mediane - V3
+L_petites <- L_truites[L_truites < seuil_classe]                                  # V3
+seuil_grande_truite <- median(L_petites, na.rm = TRUE) / ratio                    # V3 : remplace 100 / ratio
+seuil_grande_truite                                                               # V3
+sum(L_truites >= seuil_grande_truite, na.rm = TRUE)                               # V3 : nb de grandes truites predatrices
+
+# --- (6) Nombre minimal de troncons pour faire un test ------------------------------ V3
+min_troncons <- 5                                                                 # V3 : remplace 3
+
+classes <- c("petite", "grande")
 
 ############################################################
 # 3. PREDICTEURS PAR TRONCON (ReachID)
 ############################################################
 # On travaille par troncon : l'abondance des proies ou des predateurs ne depend pas de la taille
-# de chaque truite, donc pas de raisonnement circulaire (une grosse truite aurait sinon
-# mecaniquement plus de proies "mangeables").
+# de chaque truite, donc pas de raisonnement circulaire. Dans une meme classe de taille,
+# toutes les truites ont la meme liste de proies.
 
 # Effort de peche de chaque troncon (secondes d'electropeche)
 effort <- fish_complet %>%
@@ -374,7 +450,8 @@ cpue_grandes_truites <- function(code) {
     select(ReachID, cpue)
 }
 
-predicteurs <- cpue_especes(proies_codes) %>% rename(proies_cpue = cpue) %>%
+predicteurs <- cpue_especes(proies_codes) %>% rename(proies_gr_cpue = cpue) %>%
+  left_join(cpue_especes(proies_pet_codes) %>% rename(proies_pet_cpue = cpue), by = "ReachID") %>%
   left_join(cpue_especes(pred_codes) %>% rename(pred_autres_cpue = cpue), by = "ReachID") %>%
   left_join(cpue_grandes_truites("SATR") %>% rename(gt_SATR = cpue), by = "ReachID") %>%
   left_join(cpue_grandes_truites("SAFO") %>% rename(gt_SAFO = cpue), by = "ReachID")
@@ -384,11 +461,15 @@ predicteurs <- cpue_especes(proies_codes) %>% rename(proies_cpue = cpue) %>%
 truites <- fish_complet %>%
   filter(Species %in% trout_codes, !is.na(Length)) %>%
   left_join(predicteurs, by = "ReachID") %>%
-  mutate(pred_cpue = pred_autres_cpue + ifelse(Species == "SAFO", gt_SATR, gt_SAFO))
+  mutate(Classe      = ifelse(Length < seuil_classe, "petite", "grande"),
+         proies_cpue = ifelse(Classe == "petite", proies_pet_cpue, proies_gr_cpue),
+         pred_cpue   = pred_autres_cpue + ifelse(Species == "SAFO", gt_SATR, gt_SAFO))
 
-# Table par troncon et par espece de truite (une ligne = un troncon)
+table(truites$Species, truites$Classe)   # controle du nombre de truites par classe
+
+# Table par troncon, par espece de truite et par classe (une ligne = un troncon)
 reach_tab <- truites %>%
-  group_by(ReachID, Species) %>%
+  group_by(ReachID, Species, Classe) %>%
   summarise(longueur = mean(Length),
             poids = mean(Weight, na.rm = TRUE),
             n = n(),
@@ -396,28 +477,41 @@ reach_tab <- truites %>%
             pred_cpue = first(pred_cpue),
             .groups = "drop")
 
+table(reach_tab$Species, reach_tab$Classe)   # V3 : nombre de troncons par groupe (a comparer a min_troncons)
+
 # Controle : les predicteurs doivent varier d'un troncon a l'autre
 summary(reach_tab[, c("proies_cpue", "pred_cpue")])
 
 ############################################################
-# 4. CORRELATIONS DE SPEARMAN (une valeur par troncon)
+# 4. CORRELATIONS DE SPEARMAN (une valeur par troncon, dans chaque classe)
 ############################################################
 
+res_spearman <- data.frame()                                                      # V3 : tableau des resultats
+
 for (e in trout_codes) {
-  d <- reach_tab[reach_tab$Species == e, ]
-  cat("\n=====", e, "( nombre de troncons =", nrow(d), ") =====\n")
-  for (v in c("proies_cpue", "pred_cpue")) {
-    if (length(unique(d[[v]])) > 1) {
-      r <- cor.test(d$longueur, d[[v]], method = "spearman", exact = FALSE)
-      cat("Longueur ~", v, ": rho =", round(r$estimate, 2), "  p =", round(r$p.value, 3), "\n")
-    } else {
-      cat("Longueur ~", v, ": predicteur constant, test impossible\n")
+  for (cl in classes) {
+    d <- reach_tab[reach_tab$Species == e & reach_tab$Classe == cl, ]
+    cat("\n=====", e, "-", cl, "( nombre de troncons =", nrow(d), ") =====\n")
+    for (v in c("proies_cpue", "pred_cpue")) {
+      if (nrow(d) >= min_troncons && length(unique(d[[v]])) > 1) {                # V3 : min_troncons
+        r <- cor.test(d$longueur, d[[v]], method = "spearman", exact = FALSE)
+        cat("Longueur ~", v, ": rho =", round(r$estimate, 2), "  p =", round(r$p.value, 3), "\n")
+        res_spearman <- rbind(res_spearman,                                       # V3 : on garde le resultat
+                              data.frame(Espece = e, Classe = cl, Predicteur = v, # V3
+                                         n_troncons = nrow(d),                    # V3
+                                         rho = unname(r$estimate), p = r$p.value))   # V3
+      } else {
+        cat("Longueur ~", v, ": trop peu de troncons ou predicteur constant, test impossible\n")
+      }
     }
   }
 }
 
+res_spearman$p_holm <- p.adjust(res_spearman$p, method = "holm")                  # V3 : correction tests multiples
+print(res_spearman)                                                               # V3
+
 ############################################################
-# 5. MODELES MIXTES (une ligne = un poisson, troncon en effet aleatoire)
+# 5. MODELES MIXTES (une ligne = un poisson, troncon en effet aleatoire, dans chaque classe)
 ############################################################
 # Les poissons d'un meme troncon ne sont pas independants : (1 | ReachID) en tient compte.
 # Les predicteurs sont centres-reduits (scale) : le coefficient = effet d'1 ecart-type.
@@ -425,50 +519,74 @@ for (e in trout_codes) {
 
 library(lmerTest)   # charge lme4 et ajoute les p-values
 
+res_mixtes <- data.frame()                                                        # V3 : tableau des resultats
+
 for (e in trout_codes) {
-  for (resp in c("Length", "Weight")) {
-    d <- truites[truites$Species == e & !is.na(truites[[resp]]), ]
-    d$proies_z <- as.numeric(scale(d$proies_cpue))
-    d$pred_z   <- as.numeric(scale(d$pred_cpue))
-    
-    # On garde seulement les predicteurs qui varient (un predicteur constant fait echouer le modele)
-    vars <- c("proies_z", "pred_z")
-    vars <- vars[sapply(vars, function(v) !any(is.na(d[[v]])) && length(unique(d[[v]])) > 1)]
-    cat("\n=====", e, "-", resp, "- predicteurs utilises :", vars, "=====\n")
-    if (length(vars) == 0) next
-    
-    f <- as.formula(paste0("log(", resp, ") ~ ", paste(vars, collapse = " + "), " + (1 | ReachID)"))
-    m <- lmer(f, data = d)
-    print(summary(m))
+  for (cl in classes) {
+    for (resp in c("Length", "Weight")) {
+      d <- truites[truites$Species == e & truites$Classe == cl & !is.na(truites[[resp]]), ]
+      d$proies_z <- as.numeric(scale(d$proies_cpue))
+      d$pred_z   <- as.numeric(scale(d$pred_cpue))
+      
+      # On garde seulement les predicteurs qui varient (un predicteur constant fait echouer le modele)
+      vars <- c("proies_z", "pred_z")
+      vars <- vars[sapply(vars, function(v) !any(is.na(d[[v]])) && length(unique(d[[v]])) > 1)]
+      nb_troncons <- length(unique(d$ReachID))
+      cat("\n=====", e, "-", cl, "-", resp, "- predicteurs utilises :", vars,
+          "- troncons :", nb_troncons, "=====\n")
+      if (length(vars) == 0 || nb_troncons < min_troncons || nb_troncons >= nrow(d)) next   # V3 : min_troncons
+      
+      f <- as.formula(paste0("log(", resp, ") ~ ", paste(vars, collapse = " + "), " + (1 | ReachID)"))
+      m <- lmer(f, data = d)
+      print(summary(m))
+      
+      cf <- coef(summary(m))                                                      # V3 : tableau des coefficients
+      cf <- cf[rownames(cf) != "(Intercept)", , drop = FALSE]                     # V3 : on retire l'intercept
+      res_mixtes <- rbind(res_mixtes,                                             # V3
+                          data.frame(Espece = e, Classe = cl, Reponse = resp,     # V3
+                                     Predicteur = rownames(cf),                   # V3
+                                     n_poissons = nrow(d), n_troncons = nb_troncons,   # V3
+                                     Estimate = cf[, "Estimate"],                 # V3
+                                     p = cf[, "Pr(>|t|)"], row.names = NULL))     # V3
+    }
   }
 }
 
+res_mixtes$p_holm <- p.adjust(res_mixtes$p, method = "holm")                      # V3 : correction tests multiples
+print(res_mixtes)                                                                 # V3
+
 ############################################################
-# 6. FIGURE : longueur moyenne par troncon vs proies / predateurs
+# 6. FIGURE : longueur moyenne par troncon vs proies / predateurs, par classe
 ############################################################
 
 lab <- c(proies_cpue = "Proies potentielles (captures / 1000 s)",
          pred_cpue   = "Predateurs de truites (captures / 1000 s)")
 
-png("truites_proies_predateurs.png", width = 2000, height = 1600, res = 200)
-par(mfrow = c(2, 2), mar = c(4.5, 4.5, 3, 1))
+png("truites_proies_predateurs_classes.png", width = 2000, height = 3000, res = 200)
+par(mfrow = c(4, 2), mar = c(4.5, 4.5, 3, 1))
 for (e in trout_codes) {
-  d <- reach_tab[reach_tab$Species == e, ]
-  for (v in c("proies_cpue", "pred_cpue")) {
-    plot(d[[v]], d$longueur,
-         pch = 21, col = "white", bg = adjustcolor("brown", alpha.f = 0.6),
-         cex = 0.8 + 2 * sqrt(d$n / max(d$n)),      # taille du point = nombre de truites mesurees
-         xlab = lab[v], ylab = "Longueur moyenne (mm)",
-         main = paste(e, "-", lab[v]), cex.main = 0.8, las = 1)
+  for (cl in classes) {
+    d <- reach_tab[reach_tab$Species == e & reach_tab$Classe == cl, ]
+    for (v in c("proies_cpue", "pred_cpue")) {
+      if (nrow(d) == 0) { plot.new(); next }                                         # case vide
+      plot(d[[v]], d$longueur,
+           pch = 21, col = "white", bg = adjustcolor("brown", alpha.f = 0.6),
+           cex = 0.8 + 2 * sqrt(d$n / max(d$n)),      # taille du point = nombre de truites mesurees
+           xlab = lab[v], ylab = "Longueur moyenne (mm)",
+           main = paste(e, "-", cl, "-", lab[v]), cex.main = 0.8, las = 1)
+    }
   }
 }
 dev.off()
 
 ############################################################
-# 7. EXPORT : un fichier Excel avec 3 onglets
+# 7. EXPORT : un fichier Excel avec 6 onglets (fermer le fichier dans Excel avant !)
 ############################################################
 
 write_xlsx(list(fish_complet = fish_complet,
                 truites_predicteurs = truites,
-                troncons = reach_tab),
-           "fish_complet.xlsx")
+                troncons = reach_tab,
+                spearman = res_spearman,                                          # V3
+                modeles_mixtes = res_mixtes,                                      # V3
+                tailles_proies = comp_tailles),                                   # V3
+           "fish_complet_classes.xlsx")                                        # MODIFIE
