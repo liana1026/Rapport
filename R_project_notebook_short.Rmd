@@ -332,4 +332,30 @@ Reading the orange grid (transformed) :
 - pct_POOL, pct_RIFF, sub_BO, sub_CO, sub_GR, sub_SA: the x axis is now in radians (0 to about 1.57), not %. For - - orientation: 0.2 corresponds to about 4%, 0.5 to about 21%, 0.8 to about 52%, 1.0 to about 71%. The distributions look more bell-shaped than the raw ones, especially pct_POOL and pct_RIFF, which were piled up at  low values before. So the arcsine-square-root helped.
 - Remaining small flaws: sub_CO and sub_GR are slightly left-skewed (tail toward low values) after the transform,   but this is mild and acceptable.
 
+```{r Corr plot for env variables}
+cor_sp <- cor(X, method = "spearman")
+
+# p-values (cor.mtest passes method on to cor.test)
+pm <- corrplot::cor.mtest(X, method = "spearman", exact = FALSE)$p
+
+corrplot(cor_sp, method = "color", type = "upper", order = "hclust",
+         tl.cex = 0.7, addCoef.col = "black", number.cex = 0.5,
+         p.mat = pm, sig.level = 0.05, insig = "n", pch.col = "grey40")
+# or insig = "pch" to print the x marks
+```
+```{r Corr plot for reaches}
+stream <- sub("[0-9]+$", "", rownames(X))      # assumption: letters = stream
+
+# stream-level profiles (mean of reaches), then stream vs. stream correlation
+X_stream <- aggregate(scale(X), by = list(stream = stream), FUN = mean)
+rownames(X_stream) <- X_stream$stream; X_stream$stream <- NULL
+cor_stream <- cor(t(X_stream), method = "spearman")
+
+corrplot(cor_stream, method = "color", order = "hclust",
+         addCoef.col = "black",   # print the rho value in each square
+         number.cex = 0.7,        # size of the numbers
+         tl.cex = 0.8,            # size of the stream labels
+         col = colorRampPalette(c("blue", "white", "red"))(200))
+
+```
 
