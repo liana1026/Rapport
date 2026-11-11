@@ -1,0 +1,335 @@
+---
+title: "Fish communities vs. environment - Catoctin Mountain Park"
+output: html_notebook
+---
+
+# 0. Setup
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(vegan)
+library(gplots)
+library(gclus)
+library(pastecs)
+library(dplyr)
+library(tidyr)
+library(sf)
+library(ggplot2)
+library(ggspatial)
+library(maptiles)
+library(terra)
+library(corrplot)
+library(MASS)          # glm.nb  (note: MASS masks dplyr::select -> always call dplyr::select)
+library(indicspecies)
+
+select <- dplyr::select
+set.seed(42)
+```
+
+# 1. Imports
+
+```{r imports}
+base <- "C:/Users/nbo15/Documents/EPFL/Master/EPFL_Semestre_1_documents/MSR/Project/"
+
+fishdata              <- read.csv(paste0(base, "Catoctin_FishData.csv"))
+fishhabitat           <- read.csv(paste0(base, "Catoctin_FishHabitat.csv"))
+fishsites_coordinates <- read.csv(paste0(base, "Catoctin_FishSites.csv"))
+loggersites           <- read.csv(paste0(base, "Catoctin_LoggerSites.csv"))
+temperature_loggers   <- read.csv(paste0(base, "Catoctin_Temperature.csv"))
+
+id_col_fish <- names(fishsites_coordinates)[1]
+```
+
+# 2. Fish data: reach x species matrix
+
+```{r fish-matrix}
+# Count filled          -> keep the total
+# Count empty + Length  -> 1 measured fish (trout SATR / SAFO)
+# Count empty, Length empty (2 rows of FOM27) -> 0
+fishdata_modified <- fishdata %>%
+  mutate(Count = case_when(!is.na(Count)  ~ as.numeric(Count),
+                           !is.na(Length) ~ 1,
+                           TRUE           ~ 0))
+
+wide <- fishdata_modified %>%
+  select(ReachID, Species, Count) %>%
+  pivot_wider(names_from = Species, values_from = Count,
+              values_fn = sum, values_fill = 0) %>%
+  as.data.frame()
+rownames(wide) <- wide$ReachID
+wide <- wide %>% select(-ReachID)
+sp_names <- colnames(wide)
+
+dim(wide)
+sort(colSums(wide), decreasing = TRUE)      # total abundance per species
+sort(colSums(wide > 0), decreasing = TRUE)  # number of reaches where present
+```
+
+```{r heatmap}
+BC.fishdata <- vegdist(wide, method = "bray")
+heatmap(as.matrix(BC.fishdata))
+```
+
+# 3. Habitat data: cleaning and reach-level variables
+
+```{r habitat-clean}
+habitat <- fishhabitat
+habitat <- habitat[, names(habitat) != ""]          # last empty columns
+
+habitat <- habitat %>%
+  mutate(across(where(is.character), ~ toupper(trimws(.x)))) %>%
+  mutate(across(starts_with("Mesohabitat"), ~ recode(.x, "R5U" = "RUN")),
+         across(starts_with("Substrate"),
+                ~ recode(.x, "MO" = "MOSS", "S" = NA_character_, "RO" = NA_character_)),
+         DepthL = suppressWarnings(as.numeric(DepthL)))
+```
+
+```{r habitat-variables}
+# Width: mean and coefficient of variation per reach
+width <- habitat %>%
+  mutate(WettedWidth = suppressWarnings(as.numeric(WettedWidth))) %>%
+  group_by(ReachID) %>%
+  summarise(width_mean = mean(WettedWidth, na.rm = TRUE),
+            width_sd   = sd(WettedWidth,   na.rm = TRUE),
+            width_cv   = width_sd / width_mean,
+            .groups = "drop")
+
+# Depth: all Depth* columns pooled (L, M, R if present)
+depth <- habitat %>%
+  select(ReachID, starts_with("Depth")) %>%
+  mutate(across(-ReachID, ~ suppressWarnings(as.numeric(.x)))) %>%
+  pivot_longer(-ReachID, values_to = "depth") %>%
+  group_by(ReachID) %>%
+  summarise(depth_mean = mean(depth, na.rm = TRUE),
+            depth_cv   = sd(depth, na.rm = TRUE) / depth_mean,
+            .groups = "drop")
+
+# Water temperature: mean per reach
+temp_reach <- habitat %>%
+  mutate(Temp = suppressWarnings(as.numeric(Temp))) %>%
+  group_by(ReachID) %>%
+  summarise(MeanTempC = mean(Temp, na.rm = TRUE), .groups = "drop")
+
+# % pools / riffles / runs
+meso <- habitat %>%
+  select(ReachID, MesohabitatL, MesohabitatM, MesohabitatR) %>%
+  pivot_longer(-ReachID, values_to = "meso") %>%
+  filter(!is.na(meso)) %>%
+  count(ReachID, meso) %>%
+  group_by(ReachID) %>%
+  mutate(pct = 100 * n / sum(n)) %>%
+  ungroup() %>%
+  select(-n) %>%
+  pivot_wider(names_from = meso, values_from = pct,
+              names_prefix = "pct_", values_fill = 0)
+
+# % of each substrate (Top + Bottom pooled)
+# surface only -> select(ReachID, starts_with("SubstrateTop"))
+substrate <- habitat %>%
+  select(ReachID, starts_with("SubstrateTop"), starts_with("SubstrateBottom")) %>%
+  pivot_longer(-ReachID, values_to = "substrate") %>%
+  filter(!is.na(substrate)) %>%
+  count(ReachID, substrate) %>%
+  group_by(ReachID) %>%
+  mutate(pct = 100 * n / sum(n)) %>%
+  ungroup() %>%
+  select(-n) %>%
+  pivot_wider(names_from = substrate, values_from = pct,
+              names_prefix = "sub_", values_fill = 0)
+
+```
+
+```{r merge}
+env <- width %>%
+  select(-width_sd) %>%
+  left_join(depth,      by = "ReachID") %>%
+  left_join(temp_reach, by = "ReachID") %>%
+  left_join(meso,       by = "ReachID") %>%
+  left_join(substrate,  by = "ReachID")
+
+# FULL DATA: fish + environment
+full_data <- wide %>%
+  tibble::rownames_to_column("ReachID") %>%
+  left_join(env, by = "ReachID")
+
+# reaches with fish data but no habitat survey
+setdiff(rownames(wide), habitat$ReachID)
+```
+
+# 4. Water temperature map
+
+```{r temp-map}
+lat_col_fish <- "Latitude"
+lon_col_fish <- "Longitude"
+
+fish_temp_array <- fishsites_coordinates |>
+  left_join(temp_reach, by = setNames("ReachID", id_col_fish)) |>
+  st_as_sf(coords = c(lon_col_fish, lat_col_fish), crs = 4326)
+
+map_fish_temp <- ggplot() +
+  annotation_map_tile(type = "osm", zoom = 14) +
+  geom_sf(data = fish_temp_array, aes(fill = MeanTempC),
+          shape = 21, size = 3.5, color = "black", stroke = 0.4) +
+  geom_sf_text(data = fish_temp_array, aes(label = sprintf("%.1f", MeanTempC)),
+               size = 2.3, nudge_y = 0.0015, check_overlap = TRUE) +
+  scale_fill_viridis_c(option = "plasma", name = "Mean water\ntemp. (°C)",
+                       na.value = "grey70") +
+  annotation_scale(location = "bl") +
+  annotation_north_arrow(location = "tr", style = north_arrow_minimal()) +
+  labs(title = "Water temperature at fish sampling sites, Catoctin Mountain Park",
+       subtitle = "Mean of transect measurements, July 2015",
+       caption = "Grey: no habitat survey.",
+       x = "Longitude", y = "Latitude") +
+  theme_bw()
+map_fish_temp
+# ggsave("map_fish_temp.png", map_fish_temp, width = 9, height = 7, dpi = 600)
+```
+
+# 5. Dendrograms
+
+```{r dendrograms}
+k <- 3
+pal <- c("#E41A1C", "#0000FF", "#FF00FF", "#834333", "#008000")
+
+# remove empty reaches
+fish_raw <- wide[rowSums(wide) > 0, ]
+fish_hell <- decostand(fish_raw, "hellinger")
+
+# coordinates matched by ReachID (no assumption on row order)
+sites <- fishsites_coordinates[match(rownames(fish_raw), fishsites_coordinates[, 1]), ]
+stopifnot(!anyNA(sites[, 1]))
+
+get_hc <- function(mat) hclust(vegdist(mat, "euc"), method = "ward.D2")
+hc_raw  <- get_hc(fish_raw)
+hc_hell <- get_hc(fish_hell)
+grp_raw  <- cutree(hc_raw,  k)
+grp_hell <- cutree(hc_hell, k)
+
+all(names(grp_raw)  == sites[, 1])
+all(names(grp_hell) == sites[, 1])
+
+plot_dendro <- function(hc, grp, titre) {
+  plot(hc, labels = FALSE, hang = -1, main = titre,
+       xlab = "", sub = "", ylab = "Height (Ward.D2)")
+  # rect.hclust numbers clusters left to right -> map to cutree IDs (same colours as maps)
+  ids_lr <- unique(grp[hc$order])
+  rect.hclust(hc, k = k, border = pal[ids_lr])
+  legend("topright", legend = paste("Group", 1:k), fill = pal[1:k], border = NA,
+         bg = "white", cex = 0.8, inset = 0.02, xpd = TRUE)
+}
+
+par(mfrow = c(1, 2), mar = c(2, 4, 3, 1))
+plot_dendro(hc_raw,  grp_raw,  "No transformation")
+plot_dendro(hc_hell, grp_hell, "Hellinger")
+par(mfrow = c(1, 1), mar = c(5, 4, 4, 2) + 0.1)
+```
+
+```{r cluster-maps}
+pts <- st_as_sf(data.frame(sites[, 2:3], grp_raw = grp_raw, grp_hell = grp_hell),
+                coords = c("Longitude", "Latitude"), crs = 4326)
+
+bb <- st_bbox(pts)
+marge <- 0.1
+dx <- (bb["xmax"] - bb["xmin"]) * marge
+dy <- (bb["ymax"] - bb["ymin"]) * marge
+bb["xmin"] <- bb["xmin"] - dx; bb["xmax"] <- bb["xmax"] + dx
+bb["ymin"] <- bb["ymin"] - dy; bb["ymax"] <- bb["ymax"] + dy
+
+tiles <- get_tiles(st_as_sfc(bb), provider = "OpenTopoMap",
+                   zoom = 14, crop = TRUE, project = FALSE)
+pts_m <- st_transform(pts, crs(tiles))
+
+plot_map <- function(group_col, titre) {
+  plot_tiles(tiles)
+  plot(st_geometry(pts_m), add = TRUE, pch = 16, cex = 1.5,
+       col = pal[pts_m[[group_col]]])
+  legend("topright", legend = paste("Group", 1:k), pch = 16, col = pal[1:k],
+         bg = "white", box.col = "grey40", cex = 0.8, pt.cex = 1.2,
+         inset = 0.02, xpd = TRUE)
+  title(titre, line = 0.5)
+}
+
+par(mfrow = c(1, 2), mar = c(1, 1, 2.5, 1), oma = c(0, 0, 0, 0))
+plot_map("grp_raw",  "No transformation")
+plot_map("grp_hell", "Hellinger")
+par(mfrow = c(1, 1), mar = c(5, 4, 4, 2) + 0.1)
+```
+
+# 6. Build the analysis tables (Y = fish, X = environment)
+
+Only reaches with a habitat survey and at least one fish can enter the constrained analyses.
+
+```{r build-YX}
+env_names <- setdiff(colnames(env), "ReachID")
+
+dat_cc <- full_data %>%
+  filter(if_all(all_of(env_names), ~ is.finite(.x))) %>%   # complete habitat info
+  filter(rowSums(across(all_of(sp_names))) > 0)            # non-empty reaches
+
+Y <- dat_cc[, sp_names];  rownames(Y) <- dat_cc$ReachID
+X <- dat_cc[, env_names]; rownames(X) <- dat_cc$ReachID
+
+cat("Reaches used:", nrow(Y), "\n")
+
+# drop rare species (present in < 1 reaches) MODIFIED CODE SO ALL ARE TAKEN NOW Y <- Y[, occ >= 3]
+occ <- colSums(Y > 0)
+print(occ)
+Y <- Y[, occ >= 1]
+Y <- Y[rowSums(Y) > 0, ]
+X <- X[rownames(Y), ]
+cat("Species kept:", ncol(Y), "-", paste(colnames(Y), collapse = ", "), "\n")
+```
+
+# 7. Environmental variables: transform, screen, standardise
+
+```{r env-screen}
+# percentages: arcsine-square-root; width: log 
+X_t <- X
+pc <- grep("^(pct_|sub_)", colnames(X_t), value = TRUE)
+X_t[pc] <- lapply(X_t[pc], function(p) asin(sqrt(p / 100)))
+X_t$width_mean <- log(X_t$width_mean)
+X_t$depth_mean <- log(X_t$depth_mean)
+
+# compositional variables sum to 100 -> drop one meso category
+X_t <- X_t %>% select(-any_of("pct_RUN"))
+
+# remove rare substrate classes (mean < 5 %) and constant columns
+rare_sub <- grep("^sub_", colnames(X), value = TRUE)
+rare_sub <- rare_sub[colMeans(X[rare_sub]) < 5]
+X_t <- X_t %>% select(-any_of(rare_sub))
+X_t <- X_t[, apply(X_t, 2, sd) > 0, drop = FALSE]
+
+```
+
+```{r plot histograms}
+# histograms to check distributions for X (raw)
+par(mfrow = c(4, 4), mar = c(4, 4, 2, 1))
+for (v in colnames(X)) hist(X[[v]], main = v, xlab = "", col = "steelblue", border = "white")
+par(mfrow = c(1, 1))
+
+# histograms to check distributions for X_t (transformed)
+par(mfrow = c(4, 4), mar = c(4, 4, 2, 1))
+for (v in colnames(X_t)) hist(X_t[[v]], main = v, xlab = "", col = "darkorange", border = "white")
+par(mfrow = c(1, 1))
+
+```
+
+Reading the blue grid (raw) :
+- width_mean: most reaches are 2 to 6 m wide, with a right tail up to about 13 m. Mildly right-skewed, so the log   makes sense.
+- width_cv: centered around 0.3, one outlier at about 0.8.
+- depth_mean: broad, 5 to 25 cm, mode near 8 to 10 cm, slightly right-skewed.
+- depth_cv: concentrated at 0.4 to 0.6, with one clear outlier near 1.4. This reach has very uneven depths and may   have high leverage in the analysis.
+- MeanTempC: 15 to 21 °C, roughly symmetric, centered around 17.5 °C. Fine as is.
+- pct_POOL: 0 to 50%, many reaches with few pools, right-skewed.
+- pct_RIFF: 0 to 70%, many reaches with little riffle.
+- pct_RUN: 20 to 100%, centered around 55 to 60%. This is the most common mesohabitat.
+- sub_BO, sub_CO, sub_GR, sub_SA: the main substrates, fairly spread out and roughly bell-shaped (boulder and sand   0 to 40%, cobble 10 to 45%, gravel 15 to 50%). These carry real information.
+- sub_BE, sub_CL, sub_MOSS: one giant bar at 0, almost all reaches have none. They carry essentially no   information.
+- sub_SI: mostly 0 to 3%, with a small tail to about 12%.
+
+Reading the orange grid (transformed) :
+- width_mean and depth_mean : now in log(m) and more symmetric than the raw version, so the log worked.
+- width_cv, depth_mean, depth_cv, MeanTempC: unchanged on purpose. The depth_cv outlier at 1.4 is still there.
+- pct_POOL, pct_RIFF, sub_BO, sub_CO, sub_GR, sub_SA: the x axis is now in radians (0 to about 1.57), not %. For - - orientation: 0.2 corresponds to about 4%, 0.5 to about 21%, 0.8 to about 52%, 1.0 to about 71%. The distributions look more bell-shaped than the raw ones, especially pct_POOL and pct_RIFF, which were piled up at  low values before. So the arcsine-square-root helped.
+- Remaining small flaws: sub_CO and sub_GR are slightly left-skewed (tail toward low values) after the transform,   but this is mild and acceptable.
+
+
