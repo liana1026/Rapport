@@ -155,9 +155,41 @@ full_data <- wide %>%
 setdiff(rownames(wide), habitat$ReachID)
 ```
 
-# 4. Water temperature map
+# 4. Reach and Water temperature maps
+```{r stream-map, fig.width=10, fig.height=8}
+lat_col_fish <- "Latitude"
+lon_col_fish <- "Longitude"
 
-```{r temp-map}
+fish_stream_sf <- fishsites_coordinates |>
+  mutate(Stream = sub("[0-9]+$", "", .data[[id_col_fish]])) |>
+  st_as_sf(coords = c(lon_col_fish, lat_col_fish), crs = 4326)
+
+# one color per stream (edit/rename to pick your own, e.g. FOB = "red", FBB = "yellow")
+streams <- sort(unique(fish_stream_sf$Stream))
+stream_cols <- setNames(
+  c("red", "yellow", "blue", "green3", "orange", "purple", "cyan3",
+    "hotpink", "brown", "grey40")[seq_along(streams)],
+  streams)
+# example of manual override:
+# stream_cols["FOB"] <- "red"; stream_cols["FBB"] <- "yellow"
+
+map_fish_stream <- ggplot() +
+  annotation_map_tile(type = "osm", zoom = 14) +
+  geom_sf(data = fish_stream_sf, aes(fill = Stream),
+          shape = 21, size = 3, color = "black", stroke = 0.4) +
+  scale_fill_manual(values = stream_cols, name = "Stream") +
+  annotation_scale(location = "bl") +
+  annotation_north_arrow(location = "tr", style = north_arrow_minimal()) +
+  labs(title = "Fish sampling reaches by stream, Catoctin Mountain Park",
+       x = "Longitude", y = "Latitude") +
+  theme_bw()
+map_fish_stream
+# ggsave("map_fish_stream.png", map_fish_stream, width = 9, height = 7, dpi = 600)
+```
+
+
+
+```{r temp-map, fig.width=10, fig.height=8}
 lat_col_fish <- "Latitude"
 lon_col_fish <- "Longitude"
 
@@ -223,7 +255,7 @@ plot_dendro(hc_hell, grp_hell, "Hellinger")
 par(mfrow = c(1, 1), mar = c(5, 4, 4, 2) + 0.1)
 ```
 
-```{r cluster-maps}
+```{r cluster-maps, fig.width=10, fig.height=8}
 pts <- st_as_sf(data.frame(sites[, 2:3], grp_raw = grp_raw, grp_hell = grp_hell),
                 coords = c("Longitude", "Latitude"), crs = 4326)
 
