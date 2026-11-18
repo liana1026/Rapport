@@ -1,6 +1,6 @@
 ---
 title: "Fish communities vs. environment - Catoctin Mountain Park"
-output: html_notebook
+#output: html_notebook
 ---
 
 # 0. Setup
@@ -390,4 +390,180 @@ corrplot(cor_stream, method = "color", order = "hclust",
          col = colorRampPalette(c("blue", "white", "red"))(200))
 
 ```
+# 8. PCA on environmental variables
 
+```{r pca-env, fig.width=7, fig.height=4}
+# Correlation PCA = covariance PCA on standardized variables
+pca <- rda(X_t, scale = TRUE)
+
+ev      <- pca$CA$eig
+pct     <- 100 * ev / sum(ev)
+bs      <- bstick(pca)               # broken-stick expected eigenvalues
+bs_pct  <- 100 * bs / sum(ev)        # same, in % of total variance
+pc_names <- paste0("PC", seq_along(ev))
+
+# ---- Plot 1: explained variance (%) with labels (first 10 PCs) ----
+n_show <- min(10, length(ev))
+df_var <- data.frame(PC  = factor(seq_len(n_show)),
+                     pct = pct[seq_len(n_show)])
+
+ggplot(df_var, aes(x = PC, y = pct, group = 1)) +
+  geom_col(fill = "steelblue", width = 0.95) +
+  geom_line() +
+  geom_point() +
+  geom_text(aes(label = paste0(round(pct, 1), "%")),
+            vjust = -0.6, hjust = 0, size = 3.5) +
+  labs(x = "Principal Components", y = "explained variance (%)") +
+  theme_minimal()
+
+# ---- Plot 2: eigenvalues + Kaiser's rule ----
+barplot(ev, names.arg = pc_names, las = 2,
+        col = "bisque", border = "black",
+        ylab = "Eigenvalue", main = "Eigenvalues")
+abline(h = mean(ev), col = "red", lwd = 1.5)
+legend("topright", legend = "Average eigenvalue",
+       lty = 1, col = "red", bty = "n")
+
+# ---- Plot 3: % variance + broken stick model ----
+barplot(rbind(pct, bs_pct), beside = TRUE, names.arg = pc_names, las = 2,
+        col = c("bisque", "red3"), border = "black",
+        ylab = "% variance", main = "% variance")
+legend("topright", legend = c("% eigenvalue", "Broken stick model"),
+       fill = c("bisque", "red3"), bty = "n")
+
+# ---- Number of axes retained ----
+cat("Kaiser's rule:", sum(ev > mean(ev)), "PCs\n")
+cat("Broken stick: ", sum(ev > bs), "PCs\n")   # axes before the first one that falls below the stick
+```
+```{r pca-biplot, fig.width=7, fig.height=7}
+# Stream colours (matched to the legend)
+stream_cols_pca <- c(FBB = "#DC4630",   # red
+                     FBM = "#FFFF80",   # yellow
+                     FOA = "#0000FF",   # blue
+                     FOB = "#6CBF4B",   # green
+                     FOC = "#E8A04A",   # orange
+                     FOD = "#8A3FE0",   # purple
+                     FOM = "#6CC5C5")   # teal
+
+# Scores with scaling 1 (distance biplot)
+site_sc <- scores(pca, display = "sites",   scaling = 1, choices = 1:2)
+var_sc  <- scores(pca, display = "species", scaling = 1, choices = 1:2)
+
+# Stream of each reach (letters of the ReachID)
+stream_site <- sub("[0-9]+$", "", rownames(site_sc))
+site_col    <- stream_cols_pca[stream_site]
+
+# Stretch arrows to fit the site cloud (direction unchanged)
+mul    <- 0.9 * min(max(abs(site_sc[, 1])) / max(abs(var_sc[, 1])),
+                    max(abs(site_sc[, 2])) / max(abs(var_sc[, 2])))
+var_ar <- var_sc * mul
+
+lim_x <- range(site_sc[, 1], var_ar[, 1]) * 1.15
+lim_y <- range(site_sc[, 2], var_ar[, 2]) * 1.15
+
+plot(site_sc, type = "n", asp = 1, xlim = lim_x, ylim = lim_y,
+     xlab = sprintf("PC1 (%.1f%%)", pct[1]),
+     ylab = sprintf("PC2 (%.1f%%)", pct[2]),
+     main = "PCA biplot (scaling 1)")
+abline(h = 0, v = 0, lwd = 1.5)
+
+# Sites coloured by stream
+points(site_sc, pch = 21, bg = site_col, col = "black", cex = 1.8)
+
+# Variables (arrows stay red so they don't clash with the stream colours)
+arrows(0, 0, var_ar[, 1], var_ar[, 2], col = "black", lwd = 1.5, length = 0.1)
+text(var_ar[, 1] * 1.1, var_ar[, 2] * 1.1,
+     labels = rownames(var_sc), col = "black", cex = 0.7)
+
+# Legend
+legend("topright", legend = names(stream_cols_pca),
+       pt.bg = stream_cols_pca, pch = 21, col = "black",
+       pt.cex = 1.5, bty = "n", title = "Stream")
+
+```
+Interpretation of biplot with stream reaches :
+- FBB, FOA, FOD sit mostly on the left 
+    - shallower
+    - narrower
+    - high variation in width and depth
+    - sandy
+    - pools
+    - warm
+
+- FOM sits mostly on the right
+    - deeper
+    - wider
+    - low variation in width and depth
+    - cobble, gravel, boulders
+    - sometimes rifles
+    - cold
+  
+- FBM forms a tight group at the bottom
+    - deeper
+    - wider
+    - low variation in width and depth
+    - boulders
+    - no pools or rifles
+    - warm
+
+- FOB sits on the top right
+    - deeper
+    - wider
+    - low variation in width and depth
+    - cobble, gravel
+    - rifles
+    - cold
+
+- FOC sits on the top middle
+    - shallower
+    - narrower
+    - variation depends on reaches
+    - cobbler / gravel or sand depending on reaches
+    - pool or rifle depending on reaches
+    - cold or warm depending on reaches
+
+```{r pca-biplot-hell, fig.width=7, fig.height=7}
+# Hellinger group colours (same palette as the dendrogram and cluster maps)
+group_cols_pca <- setNames(pal[1:k], paste("Group", 1:k))
+
+# Scores with scaling 1 (distance biplot)
+site_sc <- scores(pca, display = "sites",   scaling = 1, choices = 1:2)
+var_sc  <- scores(pca, display = "species", scaling = 1, choices = 1:2)
+
+# Hellinger group of each reach (matched by ReachID)
+group_site <- paste("Group", grp_hell[rownames(site_sc)])
+site_col   <- group_cols_pca[group_site]
+
+# Stretch arrows to fit the site cloud (direction unchanged)
+mul    <- 0.9 * min(max(abs(site_sc[, 1])) / max(abs(var_sc[, 1])),
+                    max(abs(site_sc[, 2])) / max(abs(var_sc[, 2])))
+var_ar <- var_sc * mul
+
+lim_x <- range(site_sc[, 1], var_ar[, 1]) * 1.15
+lim_y <- range(site_sc[, 2], var_ar[, 2]) * 1.15
+
+plot(site_sc, type = "n", asp = 1, xlim = lim_x, ylim = lim_y,
+     xlab = sprintf("PC1 (%.1f%%)", pct[1]),
+     ylab = sprintf("PC2 (%.1f%%)", pct[2]),
+     main = "PCA biplot (scaling 1), Hellinger groups")
+abline(h = 0, v = 0, lwd = 1.5)
+
+# Sites coloured by Hellinger group
+points(site_sc, pch = 21, bg = site_col, col = "black", cex = 1.8)
+
+# Variables (arrows stay red so they don't clash with the group colours)
+arrows(0, 0, var_ar[, 1], var_ar[, 2], col = "black", lwd = 1.5, length = 0.1)
+text(var_ar[, 1] * 1.1, var_ar[, 2] * 1.1,
+     labels = rownames(var_sc), col = "black", cex = 0.7)
+
+# Legend
+legend("topright", legend = names(group_cols_pca),
+       pt.bg = group_cols_pca, pch = 21, col = "black",
+       pt.cex = 1.5, bty = "n", title = "Hellinger groups")
+```
+Interpretation of biplot with Hellinger fish groups :
+  - Group 3 is the most environmentally coherent: large, cold, coarse-substrate, riffle reaches. These match the FOM and FOB reaches.
+  
+  - Group 1 covers mostly the small, sandy, pool-rich, warm end of the gradient (FBB, FOA, FOD), but it also stretches into the centre and     bottom.
+  
+  - Group 2 mixes the two opposite extremes of the biplot (sandy pools on the left, boulder reaches at the bottom). The fish community        that defines this group is therefore not tied to one habitat type, and the first two environmental axes do not explain it well.
