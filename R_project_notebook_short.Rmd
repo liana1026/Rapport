@@ -435,7 +435,10 @@ legend("topright", legend = c("% eigenvalue", "Broken stick model"),
 cat("Kaiser's rule:", sum(ev > mean(ev)), "PCs\n")
 cat("Broken stick: ", sum(ev > bs), "PCs\n")   # axes before the first one that falls below the stick
 ```
-```{r pca-biplot, fig.width=7, fig.height=7}
+```{r pca-biplot-13, fig.width=7, fig.height=7}
+# Axes to plot
+axes <- c(1, 2)
+
 # Stream colours (matched to the legend)
 stream_cols_pca <- c(FBB = "#DC4630",   # red
                      FBM = "#FFFF80",   # yellow
@@ -446,8 +449,8 @@ stream_cols_pca <- c(FBB = "#DC4630",   # red
                      FOM = "#6CC5C5")   # teal
 
 # Scores with scaling 1 (distance biplot)
-site_sc <- scores(pca, display = "sites",   scaling = 1, choices = 1:2)
-var_sc  <- scores(pca, display = "species", scaling = 1, choices = 1:2)
+site_sc <- scores(pca, display = "sites",   scaling = 1, choices = axes)
+var_sc  <- scores(pca, display = "species", scaling = 1, choices = axes)
 
 # Stream of each reach (letters of the ReachID)
 stream_site <- sub("[0-9]+$", "", rownames(site_sc))
@@ -462,15 +465,15 @@ lim_x <- range(site_sc[, 1], var_ar[, 1]) * 1.15
 lim_y <- range(site_sc[, 2], var_ar[, 2]) * 1.15
 
 plot(site_sc, type = "n", asp = 1, xlim = lim_x, ylim = lim_y,
-     xlab = sprintf("PC1 (%.1f%%)", pct[1]),
-     ylab = sprintf("PC2 (%.1f%%)", pct[2]),
-     main = "PCA biplot (scaling 1)")
+     xlab = sprintf("PC%d (%.1f%%)", axes[1], pct[axes[1]]),
+     ylab = sprintf("PC%d (%.1f%%)", axes[2], pct[axes[2]]),
+     main = sprintf("PCA biplot (scaling 1), PC%d vs PC%d", axes[1], axes[2]))
 abline(h = 0, v = 0, lwd = 1.5)
 
 # Sites coloured by stream
 points(site_sc, pch = 21, bg = site_col, col = "black", cex = 1.8)
 
-# Variables (arrows stay red so they don't clash with the stream colours)
+# Variables
 arrows(0, 0, var_ar[, 1], var_ar[, 2], col = "black", lwd = 1.5, length = 0.1)
 text(var_ar[, 1] * 1.1, var_ar[, 2] * 1.1,
      labels = rownames(var_sc), col = "black", cex = 0.7)
@@ -479,7 +482,6 @@ text(var_ar[, 1] * 1.1, var_ar[, 2] * 1.1,
 legend("topright", legend = names(stream_cols_pca),
        pt.bg = stream_cols_pca, pch = 21, col = "black",
        pt.cex = 1.5, bty = "n", title = "Stream")
-
 ```
 Interpretation of biplot with stream reaches :
 - FBB, FOA, FOD sit mostly on the left 
@@ -567,3 +569,136 @@ Interpretation of biplot with Hellinger fish groups :
   - Group 1 covers mostly the small, sandy, pool-rich, warm end of the gradient (FBB, FOA, FOD), but it also stretches into the centre and     bottom.
   
   - Group 2 mixes the two opposite extremes of the biplot (sandy pools on the left, boulder reaches at the bottom). The fish community        that defines this group is therefore not tied to one habitat type, and the first two environmental axes do not explain it well.
+
+
+```{r rda-backward-manual, fig.width=7, fig.height=6}
+
+# ---- 1. Species data (Hellinger) and environmental data (standardised) ----
+Y_hell <- decostand(Y, "hellinger")
+X_s    <- as.data.frame(scale(X_t))
+
+cat("Available variables:", paste(colnames(X_s), collapse = ", "), "\n\n")
+
+# ---- 2. EDIT HERE: variables to remove from the full model ----
+# All candidate variables (copy the ones you want to drop into drop_vars):
+#   "width_mean", "width_cv", "depth_mean", "depth_cv", "MeanTempC", "pct_POOL", "pct_RIFF", "sub_BO", "sub_CO", "sub_GR","sub_SA", "sub_SI"
+drop_vars <- c("width_mean", "width_cv", "depth_mean", "depth_cv", "MeanTempC", "pct_POOL", "pct_RIFF")
+
+keep_vars <- setdiff(colnames(X_s), drop_vars)
+stopifnot(length(keep_vars) > 0)
+cat("Variables in the model:", paste(keep_vars, collapse = ", "), "\n\n")
+
+# ---- 3. Fit the RDA with the remaining variables ----
+rda_mod <- rda(Y_hell ~ ., data = X_s[, keep_vars, drop = FALSE])
+
+# ---- 4. Triplot with reaches grouped by stream (letters only) ----
+stream_cols_pca <- c(FBB = "#DC4630", FBM = "#FFFF80", FOA = "#0000FF",
+                     FOB = "#6CBF4B", FOC = "#E8A04A", FOD = "#8A3FE0",
+                     FOM = "#6CC5C5")
+
+site_sc <- scores(rda_mod, display = "sites",   scaling = 2, choices = 1:2)
+sp_sc   <- scores(rda_mod, display = "species", scaling = 2, choices = 1:2)
+bp_sc   <- scores(rda_mod, display = "bp",      scaling = 2, choices = 1:2)
+
+# Stream = ReachID without the trailing number
+stream_site <- sub("[0-9]+$", "", rownames(site_sc))
+site_col    <- stream_cols_pca[stream_site]
+
+# Stretch the environmental arrows to fit the plot (direction unchanged)
+mul   <- ordiArrowMul(bp_sc)
+bp_ar <- bp_sc * mul
+
+lim_x <- range(site_sc[, 1], sp_sc[, 1], bp_ar[, 1]) * 1.15
+lim_y <- range(site_sc[, 2], sp_sc[, 2], bp_ar[, 2]) * 1.15
+
+plot(site_sc, type = "n", asp = 1, xlim = lim_x, ylim = lim_y,
+     xlab = "RDA1", ylab = "RDA2",
+     main = "RDA (Hellinger), scaling 2")
+abline(h = 0, v = 0, lty = 2, col = "grey50")
+
+# Species (grey labels, so they stay in the background)
+text(sp_sc, labels = rownames(sp_sc), col = "grey40", cex = 0.7, font = 3)
+
+# Reaches: coloured point + stream letters only
+points(site_sc, pch = 21, bg = site_col, col = "black", cex = 1.6)
+
+# Environmental variables
+arrows(0, 0, bp_ar[, 1], bp_ar[, 2], col = "red3", lwd = 1.5, length = 0.1)
+text(bp_ar[, 1] * 1.1, bp_ar[, 2] * 1.1, labels = rownames(bp_sc),
+     col = "red3", cex = 0.8, font = 2)
+
+legend("topright", legend = names(stream_cols_pca),
+       pt.bg = stream_cols_pca, pch = 21, col = "black",
+       pt.cex = 1.3, bty = "n", title = "Stream", cex = 0.8)
+```
+
+
+
+
+```{r rda-backward-manual, fig.width=7, fig.height=6}
+
+# ---- 1. Species data (Hellinger) and environmental data (standardised) ----
+Y_hell <- decostand(Y, "hellinger")
+X_s    <- as.data.frame(scale(X_t))
+
+cat("Available variables:", paste(colnames(X_s), collapse = ", "), "\n\n")
+
+# ---- 2. EDIT HERE: variables to remove from the full model ----
+# All candidate variables (copy the ones you want to drop into drop_vars):
+#   "width_mean", "width_cv", "depth_mean", "depth_cv", "MeanTempC",
+#   "pct_POOL", "pct_RIFF",
+#   "sub_BO", "sub_CO", "sub_GR", "sub_SA", "sub_SI"
+drop_vars <- c("width_mean", "width_cv", "depth_mean", "depth_cv", "MeanTempC", "pct_POOL", "pct_RIFF")
+
+keep_vars <- setdiff(colnames(X_s), drop_vars)
+stopifnot(length(keep_vars) > 0)
+cat("Variables in the model:", paste(keep_vars, collapse = ", "), "\n\n")
+
+# ---- 3. Fit the RDA with the remaining variables ----
+rda_mod <- rda(Y_hell ~ ., data = X_s[, keep_vars, drop = FALSE])
+
+# ---- 4. Triplot with reaches grouped by stream (letters only) ----
+stream_cols_pca <- c(FBB = "#DC4630", FBM = "#FFFF80", FOA = "#0000FF",
+                     FOB = "#6CBF4B", FOC = "#E8A04A", FOD = "#8A3FE0",
+                     FOM = "#6CC5C5")
+
+site_sc <- scores(rda_mod, display = "sites",   scaling = 1, choices = 1:2)
+sp_sc   <- scores(rda_mod, display = "species", scaling = 1, choices = 1:2)
+bp_sc   <- scores(rda_mod, display = "bp",      scaling = 1, choices = 1:2)
+
+# Stream = ReachID without the trailing number
+stream_site <- sub("[0-9]+$", "", rownames(site_sc))
+site_col    <- stream_cols_pca[stream_site]
+
+# Stretch the environmental arrows to fit the plot (direction unchanged)
+mul   <- ordiArrowMul(bp_sc)
+bp_ar <- bp_sc * mul
+
+lim_x <- range(site_sc[, 1], sp_sc[, 1], bp_ar[, 1]) * 1.15
+lim_y <- range(site_sc[, 2], sp_sc[, 2], bp_ar[, 2]) * 1.15
+
+plot(site_sc, type = "n", asp = 1, xlim = lim_x, ylim = lim_y,
+     xlab = "RDA1", ylab = "RDA2",
+     main = "RDA (Hellinger), scaling 1")
+abline(h = 0, v = 0, lty = 2, col = "grey50")
+
+# Species (grey labels, so they stay in the background)
+text(sp_sc, labels = rownames(sp_sc), col = "grey40", cex = 0.7, font = 3)
+
+# Reaches: coloured point
+points(site_sc, pch = 21, bg = site_col, col = "black", cex = 1.6)
+
+# Environmental variables
+arrows(0, 0, bp_ar[, 1], bp_ar[, 2], col = "red3", lwd = 1.5, length = 0.1)
+text(bp_ar[, 1] * 1.1, bp_ar[, 2] * 1.1, labels = rownames(bp_sc),
+     col = "red3", cex = 0.8, font = 2)
+
+legend("topright", legend = names(stream_cols_pca),
+       pt.bg = stream_cols_pca, pch = 21, col = "black",
+       pt.cex = 1.3, bty = "n", title = "Stream", cex = 0.8)
+```
+
+
+
+
+
